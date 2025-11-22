@@ -10,6 +10,38 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include "util.h"
+#include <omp.h>
+
+void print_check_values(int **A, int N)
+{
+	int count = 0;
+	int i, j;
+	for (i = 0; i < N && count < 5; i++) {
+	    for (j = 0; j < N && count < 5; j++) {
+		if (i == j) continue;  // skip diagonal
+		printf("dist(%d -> %d) = %d\n", i, j, A[i][j]);
+		count++;
+	    }
+	}
+}
+
+void save_all_values(int **A, int N, const char *filename)
+{
+    FILE *fp = fopen(filename, "w");
+    if (!fp) {
+	perror("Failed to open file");
+	return;
+    }
+
+    int i, j;
+    for (i = 0; i < N; i++) {
+	for (j = 0; j < N; j++) {
+	    if (i == j) continue;
+	    fprintf(fp, "dist(%d -> %d) = %d\n", i, j, A[i][j]);
+	}
+    }
+    fclose(fp);
+}
 
 inline int min(int a, int b);
 void FW_SR (int **A, int arow, int acol, 
@@ -26,7 +58,7 @@ int main(int argc, char **argv)
 	int B=16;
 	int N=1024;
 
-	if (argc !=3){
+	if (argc !=4){
 		fprintf(stdout, "Usage %s N B \n", argv[0]);
 		exit(0);
 	}
@@ -40,9 +72,13 @@ int main(int argc, char **argv)
 	graph_init_random(A,-1,N,128*N);
 
 	gettimeofday(&t1,0);
+	#pragma omp parallel
+	#pragma omp single
+	//Single Creation of the tasks
 	FW_SR(A,0,0, A,0,0,A,0,0,N,B);
 	gettimeofday(&t2,0);
-
+	//print_check_values(A, N);
+	save_all_values(A, N, argv[3]);
 	time=(double)((t2.tv_sec-t1.tv_sec)*1000000+t2.tv_usec-t1.tv_usec)/1000000;
 	printf("FW_SR,%d,%d,%.4f\n", N, B, time);
 
@@ -77,14 +113,53 @@ void FW_SR (int **A, int arow, int acol,
 				for(j=0; j<myN; j++)
 					A[arow+i][acol+j]=min(A[arow+i][acol+j], B[brow+i][bcol+k]+C[crow+k][ccol+j]);
 	else {
+		#pragma omp task if(0)
+		//Pivot Block
+		//A_00,B_00,C_00
 		FW_SR(A,arow, acol,B,brow, bcol,C,crow, ccol, myN/2, bsize);
-		FW_SR(A,arow, acol+myN/2,B,brow, bcol,C,crow, ccol+myN/2, myN/2, bsize);
+		    
+		#pragma omp taskwait
+		    
+		#pragma omp task
+		//Pivot row and column blocks
+		//A_01,B_00,C_01
+		FW_SR(A,arow, acol+myN/2,B,brow, bcol,C,crow, ccol+myN/2, myN/2, bsize);	
+		#pragma omp task if(0)
+		//A_10,B_10,C_00
 		FW_SR(A,arow+myN/2, acol,B,brow+myN/2, bcol,C,crow, ccol, myN/2, bsize);
+		    
+		#pragma omp taskwait
+		
+		#pragma omp task
+		//Inner Block
+		//A_11,B_10,C_01
 		FW_SR(A,arow+myN/2, acol+myN/2,B,brow+myN/2, bcol,C,crow, ccol+myN/2, myN/2, bsize);
+		
+		#pragma omp taskwait
+
+		#pragma omp task
+		//Inner Block
+		//A_11,B_11,C_11
 		FW_SR(A,arow+myN/2, acol+myN/2,B,brow+myN/2, bcol+myN/2,C,crow+myN/2, ccol+myN/2, myN/2, bsize);
-		FW_SR(A,arow+myN/2, acol,B,brow+myN/2, bcol+myN/2,C,crow+myN/2, ccol, myN/2, bsize);
+		
+		#pragma omp taskwait
+		
+		#pragma omp task
+		//Pivot row and column blocks
+		//A_10,B_11,C_10
+		FW_SR(A,arow+myN/2, acol,B,brow+myN/2, bcol+myN/2,C,crow+myN/2, ccol, myN/2, bsize);    
+		#pragma omp task if(0)
+		//A_01,B_01,C_11
 		FW_SR(A,arow, acol+myN/2,B,brow, bcol+myN/2,C,crow+myN/2, ccol+myN/2, myN/2, bsize);
+		 
+		#pragma omp taskwait
+
+		//#pragma omp task
+		//Pivot blocks
+		//A_00,B_01,C_10
 		FW_SR(A,arow, acol,B,brow, bcol+myN/2,C,crow+myN/2, ccol, myN/2, bsize);
+
+		//#pragma omp taskwait
 	}
 }
 

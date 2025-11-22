@@ -9,6 +9,24 @@
 
 inline int min(int a, int b);
 
+void save_all_values(int **A, int N, const char *filename)
+{
+    FILE *fp = fopen(filename, "w");
+    if (!fp) {
+	perror("Failed to open file");
+	return;
+    }
+
+    int i, j;
+    for (i = 0; i < N; i++) {
+	for (j = 0; j < N; j++) {
+	    if (i == j) continue;
+	    fprintf(fp, "dist(%d -> %d) = %d\n", i, j, A[i][j]);
+	}
+    }
+    fclose(fp);
+}
+
 int main(int argc, char **argv)
 {
 	int **A;
@@ -17,8 +35,8 @@ int main(int argc, char **argv)
 	double time;
 	int N=1024;
 
-	if (argc != 2) {
-		fprintf(stdout,"Usage: %s N\n", argv[0]);
+	if (argc != 3) {
+		fprintf(stdout,"Usage: %s N output_file\n", argv[0]);
 		exit(0);
 	}
 
@@ -36,7 +54,7 @@ int main(int argc, char **argv)
 				A[i][j]=min(A[i][j], A[i][k] + A[k][j]);
 
 	gettimeofday(&t2,0);
-
+	save_all_values(A, N, argv[2]);
 	time=(double)((t2.tv_sec-t1.tv_sec)*1000000+t2.tv_usec-t1.tv_usec)/1000000;
 	printf("FW,%d,%.4f\n", N, time);
 

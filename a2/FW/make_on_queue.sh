@@ -4,18 +4,15 @@
 #PBS -N make_fw
 
 ## Output and error files
-#PBS -o make_fw.out
-#PBS -e make_fw.err
+#PBS -o outputs/o.out
+#PBS -e outputs/e.err
 
 ## How many machines should we get? 
 #PBS -l nodes=1:ppn=1
 
 ##How long should the job run for?
-#PBS -l walltime=00:10:00
+#PBS -l walltime=00:01:00
 
-## Start 
-## Run make in the src folder (modify properly)
-
-module load openmp
-cd <FIX_PATH>
+cd /home/parallel/parlab16/shared/a2/FW
+make clean
 make

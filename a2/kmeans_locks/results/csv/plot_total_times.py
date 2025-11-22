@@ -61,7 +61,7 @@ def main() -> None:
         plt.plot(thread_counts, times, marker="o", label=label)
 
     plt.xlabel("Thread count")
-    plt.ylabel("Total time")
+    plt.ylabel("Total time (sec)")
     plt.title("KMeans Lock Timing vs Thread Count")
     plt.xticks(threads)
     plt.grid(True, linestyle="--", linewidth=0.7, alpha=0.6)

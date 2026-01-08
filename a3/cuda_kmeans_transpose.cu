@@ -35,7 +35,7 @@ double euclid_dist_2_transpose(int numCoords, int numObjs, int numClusters,
 	int i;
 	double ans = 0.0;
 
-	/* TODO: Calculate the euclid_dist of elem=objectId of objects from elem=clusterId from clusters, but for column-base format!!! */
+	/* Calculate the euclid_dist of elem=objectId of objects from elem=clusterId from clusters, but for column-base format */
 	for (i = 0; i < numCoords; i++) {
 		double diff = objects[i * numObjs + objectId] - clusters[i * numClusters + clusterId];
 		ans += diff * diff;
@@ -113,10 +113,10 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 							new cluster */
 	double delta = 0, *dev_delta_ptr;          /* % of objects change their clusters */
 
-	/* TODO: Transpose dims */
-	double **dimObjects = NULL; //calloc_2d(...) -> [numCoords][numObjs]
-	double **dimClusters = NULL;  //calloc_2d(...) -> [numCoords][numClusters]
-	double **newClusters = NULL;  //calloc_2d(...) -> [numCoords][numClusters]
+	/* Transpose dims */
+	double **dimObjects = (double **) calloc_2d(numCoords, numObjs, sizeof(double)); // [numCoords][numObjs]
+	double **dimClusters = (double **) calloc_2d(numCoords, numClusters, sizeof(double));  // [numCoords][numClusters]
+	double **newClusters = (double **) calloc_2d(numCoords, numClusters, sizeof(double));  // [numCoords][numClusters]
 
 	double *deviceObjects;
 	double *deviceClusters;
@@ -124,9 +124,13 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 	printf("\n|-----------Transpose GPU Kmeans------------|\n\n");
 
-	//  TODO: Copy objects given in [numObjs][numCoords] layout to new
+	//  Copy objects given in [numObjs][numCoords] layout to new
 	//  [numCoords][numObjs] layout
-	for (;;);
+	for (i = 0; i < numObjs; i++) {
+		for (j = 0; j < numCoords; j++) {
+			dimObjects[j][i] = objects[i * numCoords + j];
+		}
+	}
 
 	/* pick first numClusters elements of objects[] as initial cluster centers*/
 	for (i = 0; i < numCoords; i++) {
@@ -147,7 +151,7 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 	timing = wtime();
 
 	const unsigned int numThreadsPerClusterBlock = (numObjs > blockSize) ? blockSize : numObjs;
-	const unsigned int numClusterBlocks = -1; /* TODO: Calculate Grid size, e.g. number of blocks. */
+	const unsigned int numClusterBlocks = (numObjs + numThreadsPerClusterBlock - 1) / numThreadsPerClusterBlock; //ceil
 	const unsigned int clusterBlockSharedDataSize = 0;
 
 	checkCuda(cudaMalloc(&deviceObjects, numObjs * numCoords * sizeof(double)));
@@ -172,13 +176,15 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		/* GPU part: calculate new memberships */
 
 		timing_transfers = wtime();
-		/* TODO: Copy clusters to deviceClusters
-		   checkCuda(cudaMemcpy(...)); */
+		/* Copy clusters to deviceClusters (host -> gpu) */
+		checkCuda(cudaMemcpy(deviceClusters, dimClusters[0],
+					numClusters * numCoords * sizeof(double), cudaMemcpyHostToDevice));
 		transfers_time += wtime() - timing_transfers;
 
 		checkCuda(cudaMemset(dev_delta_ptr, 0, sizeof(double)));
 
-		//printf("Launching find_nearest_cluster Kernel with grid_size = %d, block_size = %d, shared_mem = %d KB\n", numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize/1000);
+		printf("Launching find_nearest_cluster Kernel with grid_size = %d, block_size = %d, shared_mem = %d KB\n", 
+				numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize/1000);
 		timing_gpu = wtime();
 		find_nearest_cluster
 			<<< numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize >>>
@@ -188,14 +194,15 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		cudaDeviceSynchronize();
 		checkLastCudaError();
 		gpu_time += wtime() - timing_gpu;
-		//printf("Kernels complete for itter %d, updating data in CPU\n", loop);
+		printf("Kernels complete for itter %d, updating data in CPU\n", loop);
 
 		timing_transfers = wtime();
-		/* TODO: Copy deviceMembership to membership
-		   checkCuda(cudaMemcpy(...)); */
+		/* Copy deviceMembership to membership (gpu -> host) */
+		checkCuda(cudaMemcpy(membership, deviceMembership,
+					numObjs * sizeof(int), cudaMemcpyDeviceToHost));
 
-		/* TODO: Copy dev_delta_ptr to &delta
-		   checkCuda(cudaMemcpy(...)); */
+		/* Copy dev_delta_ptr to &delta */
+		checkCuda(cudaMemcpy(&delta, dev_delta_ptr, sizeof(double), cudaMemcpyDeviceToHost));
 		transfers_time += wtime() - timing_transfers;
 
 		/* CPU part: Update cluster centers*/
@@ -232,8 +239,12 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		if (timing_internal > timer_max) timer_max = timing_internal;
 	} while (delta > threshold && loop < loop_threshold);
 
-	/*TODO: Update clusters using dimClusters. Be carefull of layout!!! clusters[numClusters][numCoords] vs dimClusters[numCoords][numClusters] */
-	for (;;);
+	/* Update clusters using dimClusters. Be careful of layout! */
+	for (i = 0; i < numClusters; i++) {
+		for (j = 0; j < numCoords; j++) {
+			clusters[i * numCoords + j] = dimClusters[j][i];
+		}
+	}
 
 	timing = wtime() - timing;
 	printf("nloops = %d  : total = %lf ms\n\t-> t_loop_avg = %lf ms\n\t-> t_loop_min = %lf ms\n\t-> t_loop_max = %lf ms\n\t"
@@ -263,4 +274,3 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 	return;
 }
-

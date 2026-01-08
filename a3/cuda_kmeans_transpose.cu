@@ -154,6 +154,7 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 	const unsigned int numClusterBlocks = (numObjs + numThreadsPerClusterBlock - 1) / numThreadsPerClusterBlock; //ceil
 	const unsigned int clusterBlockSharedDataSize = 0;
 
+	/* Allocate object and cluster arrays to device global memory */
 	checkCuda(cudaMalloc(&deviceObjects, numObjs * numCoords * sizeof(double)));
 	checkCuda(cudaMalloc(&deviceClusters, numClusters * numCoords * sizeof(double)));
 	checkCuda(cudaMalloc(&deviceMembership, numObjs * sizeof(int)));
@@ -162,6 +163,7 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 	printf("t_alloc_gpu: %lf ms\n\n", 1000 * timing);
 	timing = wtime();
 
+	/* Copy objects to deviceObjects (host -> gpu) */
 	checkCuda(cudaMemcpy(deviceObjects, dimObjects[0],
 				numObjs * numCoords * sizeof(double), cudaMemcpyHostToDevice));
 	checkCuda(cudaMemcpy(deviceMembership, membership,

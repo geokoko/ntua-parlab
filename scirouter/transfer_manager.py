@@ -1,8 +1,13 @@
-import pexpect
-import sys
-import os
-import subprocess
 import getpass
+import itertools
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+import pexpect
 
 def load_env_file(path):
     if not os.path.exists(path):
@@ -93,48 +98,118 @@ def local_exercise_paths():
         sys.exit(1)
     return paths
 
-def handle_scp_interaction(child, timeout_initial=30, timeout_copy=600):
+def handle_scp_interaction(child, timeout_initial=30, timeout_copy=600, status_label="SCP"):
     """
     Handles the interaction for SCP.
     Expects: Password prompt, Host confirmation, or Completion/Prompt.
     """
+    spinner = itertools.cycle("|/-\\")
+    spinner_active = False
+    last_activity = time.monotonic()
+    max_silence = timeout_initial
+
+    def clear_spinner():
+        nonlocal spinner_active
+        if not spinner_active:
+            return
+        sys.stderr.write("\r")
+        sys.stderr.write(" " * 80)
+        sys.stderr.write("\r")
+        sys.stderr.flush()
+        spinner_active = False
+    patterns = [
+        re.compile(r"(?i)password:"),
+        re.compile(r"continue connecting"),
+        re.compile(r"(?i)permission denied"),
+        re.compile(r"(?i)host key verification failed"),
+        re.compile(r"(?i)enter passphrase"),
+        r"[$#]",
+        pexpect.EOF,
+        pexpect.TIMEOUT,
+    ]
+    tick_interval = 2
     while True:
         # Expect either a password prompt, a confirmation, or the shell prompt (meaning done)
-        index = child.expect(['password:', 'continue connecting', '[$#]', pexpect.EOF, pexpect.TIMEOUT], timeout=timeout_initial)
+        index = child.expect(patterns, timeout=tick_interval)
+        now = time.monotonic()
         
         if index == 0: # password:
+            clear_spinner()
             child.sendline(PASSWORD)
-            # After sending password, we wait for completion (prompt)
-            # We increase timeout for large file copy
-            child.expect(['[$#]', pexpect.EOF], timeout=timeout_copy)
-            return True
-            
-        elif index == 1: # continue connecting (yes/no)
-            child.sendline('yes')
-            # Loop back to check for password or prompt
+            max_silence = timeout_copy
+            last_activity = now
             continue
             
-        elif index == 2: # [$#] - Prompt returned, meaning command finished immediately or fast
+        elif index == 1: # continue connecting (yes/no)
+            clear_spinner()
+            child.sendline('yes')
+            # Loop back to check for password or prompt
+            max_silence = timeout_copy
+            last_activity = now
+            continue
+            
+        elif index == 2: # permission denied
+            clear_spinner()
+            print("Permission denied during SCP.")
+            return False
+
+        elif index == 3: # host key verification failed
+            clear_spinner()
+            print("Host key verification failed during SCP.")
+            return False
+
+        elif index == 4: # passphrase prompt indicates key auth
+            clear_spinner()
+            print("SSH key passphrase prompt detected. Disable key auth or allow password auth.")
+            return False
+
+        elif index == 5: # [$#] - Prompt returned, meaning command finished immediately or fast
+            clear_spinner()
             return True
             
-        elif index == 3: # EOF
+        elif index == 6: # EOF
+            clear_spinner()
             return True
             
-        elif index == 4: # TIMEOUT
+        elif index == 7: # TIMEOUT
             # If we timed out waiting for a password, it's possible that:
             # 1. SCP is working (copying files) and didn't ask for a password (SSH keys).
             # 2. SCP is stuck silently.
             # We check the buffer to see if there is activity.
-            output = child.before
-            if "100%" in output or "KB/s" in output or "shared" in output:
-                print("  -> SCP seems to be running (no password needed). Waiting for completion...")
-                # Wait for the prompt (completion)
-                child.expect(['[$#]', pexpect.EOF], timeout=timeout_copy)
-                return True
-            else:
+            output = child.before or ""
+            if output.strip():
+                last_activity = now
+                continue
+            if now - last_activity > max_silence:
+                clear_spinner()
                 print("Timeout waiting for interaction. Output so far:")
                 print(output)
                 return False
+            spinner_active = True
+            elapsed = int(now - last_activity)
+            sys.stderr.write(f"\r{status_label}... {next(spinner)} {elapsed}s")
+            sys.stderr.flush()
+            continue
+
+def run_scp_with_pexpect(cmd, step_name, timeout_initial=30, timeout_copy=1200):
+    child = pexpect.spawn(cmd, encoding='utf-8')
+    child.logfile_read = sys.stdout
+    ok = handle_scp_interaction(
+        child,
+        timeout_initial=timeout_initial,
+        timeout_copy=timeout_copy,
+        status_label=step_name
+    )
+    child.close()
+    if not ok:
+        return False
+    if child.exitstatus not in (0, None):
+        print(f"{step_name} failed with exit code {child.exitstatus}.")
+        return False
+    if child.signalstatus is not None:
+        print(f"{step_name} terminated with signal {child.signalstatus}.")
+        return False
+    return True
 
 def run_step_1_pull_remote_scp():
     """
@@ -145,6 +220,7 @@ def run_step_1_pull_remote_scp():
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ORION}",
         encoding='utf-8'
     )
+    child.logfile_read = sys.stdout
     
     # Handle Orion Login
     i = child.expect(['password:', '[$#]'], timeout=10)
@@ -160,7 +236,7 @@ def run_step_1_pull_remote_scp():
     )
     child.sendline(scp_cmd)
     
-    if handle_scp_interaction(child):
+    if handle_scp_interaction(child, status_label="Remote SCP (pull)"):
         print("  -> Remote copy finished.")
         child.sendline('exit')
         child.close()
@@ -178,6 +254,7 @@ def run_step_2_push_remote_scp():
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ORION}",
         encoding='utf-8'
     )
+    child.logfile_read = sys.stdout
     
     i = child.expect(['password:', '[$#]'], timeout=10)
     if i == 0:
@@ -190,7 +267,7 @@ def run_step_2_push_remote_scp():
     )
     child.sendline(scp_cmd)
     
-    if handle_scp_interaction(child):
+    if handle_scp_interaction(child, status_label="Remote SCP (push)"):
         print("  -> Remote copy finished.")
         child.sendline('exit')
         child.close()
@@ -252,13 +329,13 @@ def push():
     # 2. Local SCP (Local pushes to Orion)
     print("Step 2: Pushing from Local to Orion...")
     local_sources = local_exercise_paths()
-    cmd = [
-        "sshpass", "-p", PASSWORD,
+    scp_args = [
         "scp", *SSH_OPTIONS, "-r",
         *local_sources,
         f"{ORION}:{ORION_HOME}/shared"
     ]
-    if not run_cmd(cmd, "Step 2"):
+    scp_cmd = " ".join(shlex.quote(arg) for arg in scp_args)
+    if not run_scp_with_pexpect(scp_cmd, "Step 2"):
         print("Failed Step 2")
         sys.exit(1)
         

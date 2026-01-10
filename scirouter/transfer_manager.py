@@ -57,6 +57,56 @@ EXERCISE_DIRS = require_env("EXERCISE_DIRS").split()
 SSH_OPTIONS = require_env("SSH_OPTIONS").split()
 PASSWORD = os.getenv("PASSWORD")
 
+def die(message):
+    print(message)
+    sys.exit(1)
+
+def ensure_abs_not_root(label, path):
+    if not os.path.isabs(path):
+        die(f"{label} must be an absolute path: {path}")
+    if os.path.normpath(path) == "/":
+        die(f"{label} cannot be '/'.")
+
+def ensure_shared_dir(label, path):
+    if not os.path.isabs(path):
+        die(f"{label} must be an absolute path: {path}")
+    if os.path.basename(os.path.normpath(path)) != "shared":
+        die(f"{label} must end with '/shared': {path}")
+
+def path_within(base, path):
+    base = os.path.abspath(base)
+    path = os.path.abspath(path)
+    return os.path.commonpath([base, path]) == base
+
+def validate_exercise_dirs():
+    require_exercise_dirs()
+    local_base = os.path.abspath(LOCAL_PARALLEL)
+    ensure_abs_not_root("LOCAL_PARALLEL", local_base)
+    for raw in EXERCISE_DIRS:
+        if not raw:
+            die("EXERCISE_DIRS contains an empty entry.")
+        if any(ch in raw for ch in "*?[]"):
+            die(f"EXERCISE_DIRS contains glob characters: {raw}")
+        if os.path.isabs(raw):
+            abs_path = raw
+        else:
+            norm = os.path.normpath(raw)
+            if norm in (".", "..") or norm.startswith(f"..{os.sep}"):
+                die(f"EXERCISE_DIRS contains unsafe path: {raw}")
+            abs_path = os.path.join(local_base, norm)
+        abs_path = os.path.abspath(abs_path)
+        if abs_path == local_base:
+            die(f"EXERCISE_DIRS entry points at LOCAL_PARALLEL: {raw}")
+        if not path_within(local_base, abs_path):
+            die(f"EXERCISE_DIRS entry is outside LOCAL_PARALLEL: {raw}")
+
+def validate_transfer_paths():
+    ensure_abs_not_root("ORION_HOME", ORION_HOME)
+    ensure_abs_not_root("LOCAL_PARALLEL", LOCAL_PARALLEL)
+    ensure_shared_dir("SCIROUTER_SHARED", SCIROUTER_SHARED)
+    ensure_shared_dir("ORION_HOME/shared", os.path.join(ORION_HOME, "shared"))
+    validate_exercise_dirs()
+
 def require_password():
     global PASSWORD
     if PASSWORD:
@@ -98,9 +148,48 @@ def local_exercise_paths():
         sys.exit(1)
     return paths
 
-def handle_scp_interaction(child, timeout_initial=30, timeout_copy=600, status_label="SCP"):
+RSYNC_BASE_ARGS = ["rsync", "-r", "--checksum", "--info=NAME2"]
+
+def build_ssh_command():
+    parts = ["ssh", *SSH_OPTIONS]
+    return " ".join(shlex.quote(part) for part in parts)
+
+def format_rsync_line(line):
+    line = line.rstrip("\r")
+    if not line:
+        return None
+    suffix = " is uptodate"
+    if line.endswith(suffix):
+        name = line[: -len(suffix)]
+        return f"Skipped (unchanged): {name}"
+    return line
+
+class LineFormatter:
+    def __init__(self, formatter):
+        self.formatter = formatter
+        self.buffer = ""
+
+    def write(self, data):
+        if not data:
+            return
+        self.buffer += data
+        while "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            self._emit(line)
+
+    def flush(self):
+        if self.buffer:
+            self._emit(self.buffer)
+            self.buffer = ""
+
+    def _emit(self, line):
+        formatted = self.formatter(line)
+        if formatted:
+            print(formatted)
+
+def handle_transfer_interaction(child, timeout_initial=30, timeout_copy=600, status_label="transfer"):
     """
-    Handles the interaction for SCP.
+    Handles the interaction for transfer commands.
     Expects: Password prompt, Host confirmation, or Completion/Prompt.
     """
     spinner = itertools.cycle("|/-\\")
@@ -150,12 +239,12 @@ def handle_scp_interaction(child, timeout_initial=30, timeout_copy=600, status_l
             
         elif index == 2: # permission denied
             clear_spinner()
-            print("Permission denied during SCP.")
+            print("Permission denied during transfer.")
             return False
 
         elif index == 3: # host key verification failed
             clear_spinner()
-            print("Host key verification failed during SCP.")
+            print("Host key verification failed during transfer.")
             return False
 
         elif index == 4: # passphrase prompt indicates key auth
@@ -173,8 +262,8 @@ def handle_scp_interaction(child, timeout_initial=30, timeout_copy=600, status_l
             
         elif index == 7: # TIMEOUT
             # If we timed out waiting for a password, it's possible that:
-            # 1. SCP is working (copying files) and didn't ask for a password (SSH keys).
-            # 2. SCP is stuck silently.
+            # 1. Transfer is running (copying files) and didn't ask for a password (SSH keys).
+            # 2. Transfer is stuck silently.
             # We check the buffer to see if there is activity.
             output = child.before or ""
             if output.strip():
@@ -191,10 +280,10 @@ def handle_scp_interaction(child, timeout_initial=30, timeout_copy=600, status_l
             sys.stderr.flush()
             continue
 
-def run_scp_with_pexpect(cmd, step_name, timeout_initial=30, timeout_copy=1200):
+def run_transfer_with_pexpect(cmd, step_name, timeout_initial=30, timeout_copy=1200):
     child = pexpect.spawn(cmd, encoding='utf-8')
-    child.logfile_read = sys.stdout
-    ok = handle_scp_interaction(
+    child.logfile_read = LineFormatter(format_rsync_line)
+    ok = handle_transfer_interaction(
         child,
         timeout_initial=timeout_initial,
         timeout_copy=timeout_copy,
@@ -211,92 +300,109 @@ def run_scp_with_pexpect(cmd, step_name, timeout_initial=30, timeout_copy=1200):
         return False
     return True
 
-def run_step_1_pull_remote_scp():
+def run_step_1_pull_remote_rsync():
     """
-    On Orion: scp -r scirouter:.../shared /home/parallel/parlab16
+    On Orion: rsync --checksum scirouter:.../shared/<exercise> /home/parallel/parlab16/shared
     """
     print("Step 1: Orion pulling from Scirouter...")
     child = pexpect.spawn(
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ORION}",
         encoding='utf-8'
     )
-    child.logfile_read = sys.stdout
-    
+    child.logfile_read = LineFormatter(format_rsync_line)
+
     # Handle Orion Login
     i = child.expect(['password:', '[$#]'], timeout=10)
     if i == 0:
         child.sendline(PASSWORD)
         child.expect(['[$#]', 'parlab16@orion'], timeout=10)
-    
-    # Run SCP on Orion
-    # Using -o StrictHostKeyChecking=no for inner SSH too
-    scp_cmd = (
-        f"scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-        f"-r {SCIROUTER}:{SCIROUTER_SHARED} {ORION_HOME}"
-    )
-    child.sendline(scp_cmd)
-    
-    if handle_scp_interaction(child, status_label="Remote SCP (pull)"):
-        print("  -> Remote copy finished.")
+
+    child.sendline(f"mkdir -p {ORION_HOME}/shared")
+    child.expect(['[$#]'], timeout=10)
+
+    ssh_cmd = build_ssh_command()
+    remote_sources = [
+        f"{SCIROUTER}:{SCIROUTER_SHARED}/{name}"
+        for name in EXERCISE_DIRS
+    ]
+    rsync_args = [
+        *RSYNC_BASE_ARGS,
+        "-e", ssh_cmd,
+        *remote_sources,
+        f"{ORION_HOME}/shared/"
+    ]
+    rsync_cmd = " ".join(shlex.quote(arg) for arg in rsync_args)
+    child.sendline(rsync_cmd)
+
+    if handle_transfer_interaction(child, status_label="Remote rsync (pull)"):
+        print("  -> Remote sync finished.")
         child.sendline('exit')
         child.close()
         return True
-    else:
-        child.close()
-        return False
+    child.close()
+    return False
 
-def run_step_2_push_remote_scp():
+def run_step_2_push_remote_rsync():
     """
-    On Orion: scp -r .../shared/* scirouter:.../shared
+    On Orion: rsync --checksum /home/parallel/parlab16/shared/<exercise> scirouter:.../shared
     """
     print("Step 2: Orion pushing to Scirouter...")
     child = pexpect.spawn(
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ORION}",
         encoding='utf-8'
     )
-    child.logfile_read = sys.stdout
-    
+    child.logfile_read = LineFormatter(format_rsync_line)
+
     i = child.expect(['password:', '[$#]'], timeout=10)
     if i == 0:
         child.sendline(PASSWORD)
         child.expect(['[$#]', 'parlab16@orion'], timeout=10)
-        
-    scp_cmd = (
-        f"scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-        f"-r {ORION_HOME}/shared/* {SCIROUTER}:{SCIROUTER_SHARED}"
-    )
-    child.sendline(scp_cmd)
-    
-    if handle_scp_interaction(child, status_label="Remote SCP (push)"):
-        print("  -> Remote copy finished.")
+
+    ssh_cmd = build_ssh_command()
+    local_sources = [
+        f"{ORION_HOME}/shared/{name}"
+        for name in EXERCISE_DIRS
+    ]
+    rsync_args = [
+        *RSYNC_BASE_ARGS,
+        "-e", ssh_cmd,
+        *local_sources,
+        f"{SCIROUTER}:{SCIROUTER_SHARED}/"
+    ]
+    rsync_cmd = " ".join(shlex.quote(arg) for arg in rsync_args)
+    child.sendline(rsync_cmd)
+
+    if handle_transfer_interaction(child, status_label="Remote rsync (push)"):
+        print("  -> Remote sync finished.")
         child.sendline('exit')
         child.close()
         return True
-    else:
-        child.close()
-        return False
+    child.close()
+    return False
 
 def pull():
     require_password()
-    # 1. Remote SCP (Orion pulls from Scirouter)
-    if not run_step_1_pull_remote_scp():
+    validate_transfer_paths()
+    # 1. Remote rsync (Orion pulls from Scirouter)
+    if not run_step_1_pull_remote_rsync():
         print("Failed Step 1")
         sys.exit(1)
         
-    # 2. Local SCP (Local pulls from Orion)
+    # 2. Local rsync (Local pulls from Orion)
     print("Step 2: Pulling from Orion to Local...")
     require_exercise_dirs()
     remote_sources = [
         f"{ORION}:{ORION_HOME}/shared/{name}"
         for name in EXERCISE_DIRS
     ]
-    cmd = [
-        "sshpass", "-p", PASSWORD,
-        "scp", *SSH_OPTIONS, "-r",
+    rsync_args = [
+        *RSYNC_BASE_ARGS,
+        "-e", build_ssh_command(),
         *remote_sources,
         LOCAL_PARALLEL
     ]
-    if not run_cmd(cmd, "Step 2"):
+    rsync_cmd = " ".join(shlex.quote(arg) for arg in rsync_args)
+    if not run_transfer_with_pexpect(rsync_cmd, "Step 2"):
         print("Failed Step 2")
         sys.exit(1)
     
@@ -314,6 +420,7 @@ def pull():
 
 def push():
     require_password()
+    validate_transfer_paths()
     # 1. Prepare Orion shared directory
     print("Step 1: Preparing Orion shared directory...")
     cmd = [
@@ -326,21 +433,22 @@ def push():
         print("Failed Step 1")
         sys.exit(1)
 
-    # 2. Local SCP (Local pushes to Orion)
+    # 2. Local rsync (Local pushes to Orion)
     print("Step 2: Pushing from Local to Orion...")
     local_sources = local_exercise_paths()
-    scp_args = [
-        "scp", *SSH_OPTIONS, "-r",
+    rsync_args = [
+        *RSYNC_BASE_ARGS,
+        "-e", build_ssh_command(),
         *local_sources,
-        f"{ORION}:{ORION_HOME}/shared"
+        f"{ORION}:{ORION_HOME}/shared/"
     ]
-    scp_cmd = " ".join(shlex.quote(arg) for arg in scp_args)
-    if not run_scp_with_pexpect(scp_cmd, "Step 2"):
+    rsync_cmd = " ".join(shlex.quote(arg) for arg in rsync_args)
+    if not run_transfer_with_pexpect(rsync_cmd, "Step 2"):
         print("Failed Step 2")
         sys.exit(1)
         
-    # 3. Remote SCP (Orion pushes to Scirouter)
-    if not run_step_2_push_remote_scp():
+    # 3. Remote rsync (Orion pushes to Scirouter)
+    if not run_step_2_push_remote_rsync():
         print("Failed Step 3")
         sys.exit(1)
         

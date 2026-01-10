@@ -22,7 +22,7 @@ export CUDA_VISIBLE_DEVICES=2
 sizes='1024'
 
 #coordinates='4'
-coordinates='32'
+coordinates='2 32'
 
 #centers='64'
 centers='64'
@@ -34,9 +34,9 @@ block_size='32 48 64 128 256 512 1024'
 
 progs=(
 	kmeans_seq
-	kmeans_cuda_naive
-	#kmeans_cuda_transpose
-	#kmeans_cuda_shared
+	#kmeans_cuda_naive
+	kmeans_cuda_transpose
+	kmeans_cuda_shared
 	#kmeans_cuda_all_gpu
 	#kmeans_cuda_all_gpu_delta_reduction
 )

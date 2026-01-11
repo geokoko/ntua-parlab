@@ -17,5 +17,55 @@
 ## Run make in the src folder (modify properly)
 
 cd /home/parallel/parlab16/shared/a3
-make clean
-make
+
+RESULTS_DIR="results"
+
+log_dir_for_prog() {
+	case "$1" in
+		kmeans_seq)
+			echo "${RESULTS_DIR}/seq"
+			;;
+		kmeans_cuda_naive)
+			echo "${RESULTS_DIR}/naive"
+			;;
+		kmeans_cuda_transpose)
+			echo "${RESULTS_DIR}/transpose"
+			;;
+		kmeans_cuda_shared)
+			echo "${RESULTS_DIR}/shared_mem"
+			;;
+		kmeans_cuda_all_gpu)
+			echo "${RESULTS_DIR}/all_gpu"
+			;;
+		kmeans_cuda_all_gpu_delta_reduction)
+			echo "${RESULTS_DIR}/reduction"
+			;;
+		*)
+			echo "${RESULTS_DIR}/other"
+			;;
+	esac
+}
+
+make_clean_out="${RESULTS_DIR}/make_clean.out"
+make_clean_err="${RESULTS_DIR}/make_clean.err"
+
+mkdir -p "$RESULTS_DIR"
+make clean >> "$make_clean_out" 2>> "$make_clean_err"
+
+progs=(
+	kmeans_seq
+	kmeans_cuda_naive
+	kmeans_cuda_transpose
+	kmeans_cuda_shared
+	#kmeans_cuda_all_gpu
+	#kmeans_cuda_all_gpu_delta_reduction
+)
+
+for prog in "${progs[@]}"; do
+	log_dir=$(log_dir_for_prog "$prog")
+	mkdir -p "$log_dir"
+	make_out="${log_dir}/make.out"
+	make_err="${log_dir}/make.err"
+	make "$prog" >> "$make_out" 2>> "$make_err"
+done
+

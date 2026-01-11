@@ -148,7 +148,8 @@ def local_exercise_paths():
         sys.exit(1)
     return paths
 
-RSYNC_BASE_ARGS = ["rsync", "-r", "--checksum", "--info=NAME2"]
+RSYNC_STATUS_PREFIX = "__RSYNC_STATUS__:"
+RSYNC_BASE_ARGS = ["rsync", "-r", "--checksum", "--itemize-changes"]
 
 def build_ssh_command():
     parts = ["ssh", *SSH_OPTIONS]
@@ -164,9 +165,66 @@ def format_rsync_line(line):
         return f"Skipped (unchanged): {name}"
     return line
 
-class LineFormatter:
-    def __init__(self, formatter):
+def parse_itemized_path(line):
+    parts = line.strip().split(None, 1)
+    if len(parts) != 2:
+        return None
+    tag, path = parts
+    if tag in ("deleting", "*deleting"):
+        return path
+    if tag[:1] in (".", ">", "<", "c", "h"):
+        return path
+    if tag.startswith("cd"):
+        return path
+    return None
+
+def print_skipped_files(all_files, changed_files):
+    skipped = sorted(all_files - changed_files)
+    for path in skipped:
+        print(f"Skipped (unchanged): {path}")
+
+def collect_local_files():
+    sources = local_exercise_paths()
+    files = set()
+    for path in sources:
+        for root, _, filenames in os.walk(path):
+            for name in filenames:
+                full = os.path.join(root, name)
+                rel = os.path.relpath(full, LOCAL_PARALLEL)
+                files.add(rel)
+    return files
+
+def list_orion_shared_files():
+    cmd = [
+        "sshpass", "-p", PASSWORD,
+        "ssh", *SSH_OPTIONS,
+        ORION,
+        f"find {ORION_HOME}/shared -type f -print0"
+    ]
+    try:
+        result = subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.TimeoutExpired:
+        print("Listing Orion shared files timed out.")
+        return None
+    except subprocess.CalledProcessError as exc:
+        print(f"Listing Orion shared files failed with exit code {exc.returncode}.")
+        return None
+    files = set()
+    base = os.path.join(ORION_HOME, "shared")
+    for entry in result.stdout.split(b"\0"):
+        if not entry:
+            continue
+        path = entry.decode("utf-8", errors="replace")
+        rel = os.path.relpath(path, base)
+        files.add(rel)
+    return files
+
+class RsyncOutput:
+    def __init__(self, formatter, status_prefix=None):
         self.formatter = formatter
+        self.status_prefix = status_prefix
+        self.status = None
+        self.changed_paths = set()
         self.buffer = ""
 
     def write(self, data):
@@ -183,11 +241,28 @@ class LineFormatter:
             self.buffer = ""
 
     def _emit(self, line):
+        if self.status_prefix and line.startswith(self.status_prefix):
+            value = line[len(self.status_prefix):].strip()
+            if value.isdigit():
+                self.status = int(value)
+            return
+        path = parse_itemized_path(line)
+        if path:
+            if not path.endswith("/"):
+                self.changed_paths.add(path)
         formatted = self.formatter(line)
         if formatted:
             print(formatted)
 
-def handle_transfer_interaction(child, timeout_initial=30, timeout_copy=600, status_label="transfer"):
+def handle_transfer_interaction(
+    child,
+    timeout_initial=30,
+    timeout_copy=600,
+    status_label="transfer",
+    prompt_pattern=r"[$#]",
+    status_prefix=None,
+    status_output=None,
+):
     """
     Handles the interaction for transfer commands.
     Expects: Password prompt, Host confirmation, or Completion/Prompt.
@@ -212,10 +287,15 @@ def handle_transfer_interaction(child, timeout_initial=30, timeout_copy=600, sta
         re.compile(r"(?i)permission denied"),
         re.compile(r"(?i)host key verification failed"),
         re.compile(r"(?i)enter passphrase"),
-        r"[$#]",
         pexpect.EOF,
         pexpect.TIMEOUT,
     ]
+    status_regex = None
+    if status_prefix:
+        status_regex = re.compile(re.escape(status_prefix) + r"(\d+)")
+        patterns.insert(5, status_regex)
+    if prompt_pattern:
+        patterns.insert(-2, prompt_pattern)
     tick_interval = 2
     while True:
         # Expect either a password prompt, a confirmation, or the shell prompt (meaning done)
@@ -252,15 +332,22 @@ def handle_transfer_interaction(child, timeout_initial=30, timeout_copy=600, sta
             print("SSH key passphrase prompt detected. Disable key auth or allow password auth.")
             return False
 
-        elif index == 5: # [$#] - Prompt returned, meaning command finished immediately or fast
+        elif status_regex and patterns[index] == status_regex:
+            clear_spinner()
+            match = status_regex.search(child.after or "")
+            if match and status_output is not None:
+                status_output.status = int(match.group(1))
+            return True
+
+        elif prompt_pattern and patterns[index] == prompt_pattern:
+            clear_spinner()
+            return True
+
+        elif patterns[index] == pexpect.EOF:
             clear_spinner()
             return True
             
-        elif index == 6: # EOF
-            clear_spinner()
-            return True
-            
-        elif index == 7: # TIMEOUT
+        elif patterns[index] == pexpect.TIMEOUT:
             # If we timed out waiting for a password, it's possible that:
             # 1. Transfer is running (copying files) and didn't ask for a password (SSH keys).
             # 2. Transfer is stuck silently.
@@ -280,15 +367,24 @@ def handle_transfer_interaction(child, timeout_initial=30, timeout_copy=600, sta
             sys.stderr.flush()
             continue
 
-def run_transfer_with_pexpect(cmd, step_name, timeout_initial=30, timeout_copy=1200):
+def run_transfer_with_pexpect(
+    cmd,
+    step_name,
+    source_files=None,
+    timeout_initial=30,
+    timeout_copy=1200,
+    print_skips=True,
+):
     child = pexpect.spawn(cmd, encoding='utf-8')
-    child.logfile_read = LineFormatter(format_rsync_line)
+    output = RsyncOutput(format_rsync_line)
+    child.logfile_read = output
     ok = handle_transfer_interaction(
         child,
         timeout_initial=timeout_initial,
         timeout_copy=timeout_copy,
         status_label=step_name
     )
+    output.flush()
     child.close()
     if not ok:
         return False
@@ -298,6 +394,8 @@ def run_transfer_with_pexpect(cmd, step_name, timeout_initial=30, timeout_copy=1
     if child.signalstatus is not None:
         print(f"{step_name} terminated with signal {child.signalstatus}.")
         return False
+    if print_skips and source_files is not None:
+        print_skipped_files(source_files, output.changed_paths)
     return True
 
 def run_step_1_pull_remote_rsync():
@@ -309,7 +407,8 @@ def run_step_1_pull_remote_rsync():
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ORION}",
         encoding='utf-8'
     )
-    child.logfile_read = LineFormatter(format_rsync_line)
+    output = RsyncOutput(format_rsync_line, status_prefix=RSYNC_STATUS_PREFIX)
+    child.logfile_read = output
 
     # Handle Orion Login
     i = child.expect(['password:', '[$#]'], timeout=10)
@@ -332,17 +431,37 @@ def run_step_1_pull_remote_rsync():
         f"{ORION_HOME}/shared/"
     ]
     rsync_cmd = " ".join(shlex.quote(arg) for arg in rsync_args)
-    child.sendline(rsync_cmd)
+    child.sendline(f"{rsync_cmd}; printf '{RSYNC_STATUS_PREFIX}%s\\n' $?; exit")
 
-    if handle_transfer_interaction(child, status_label="Remote rsync (pull)"):
-        print("  -> Remote sync finished.")
-        child.sendline('exit')
+    ok = handle_transfer_interaction(
+        child,
+        status_label="Remote rsync (pull)",
+        prompt_pattern=None,
+        status_prefix=RSYNC_STATUS_PREFIX,
+        status_output=output,
+    )
+    output.flush()
+    if not ok:
         child.close()
-        return True
+        return False
+    if output.status is None:
+        print("Remote rsync (pull) did not report an exit status.")
+        child.close()
+        return False
+    if output.status != 0:
+        print(f"Remote rsync (pull) failed with exit code {output.status}.")
+        child.close()
+        return False
+    print("  -> Remote sync finished.")
+    orion_files = list_orion_shared_files()
+    if orion_files is None:
+        print("Warning: could not list Orion files to report skipped files.")
+    else:
+        print_skipped_files(orion_files, output.changed_paths)
     child.close()
-    return False
+    return True
 
-def run_step_2_push_remote_rsync():
+def run_step_2_push_remote_rsync(source_files):
     """
     On Orion: rsync --checksum /home/parallel/parlab16/shared/<exercise> scirouter:.../shared
     """
@@ -351,7 +470,8 @@ def run_step_2_push_remote_rsync():
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ORION}",
         encoding='utf-8'
     )
-    child.logfile_read = LineFormatter(format_rsync_line)
+    output = RsyncOutput(format_rsync_line, status_prefix=RSYNC_STATUS_PREFIX)
+    child.logfile_read = output
 
     i = child.expect(['password:', '[$#]'], timeout=10)
     if i == 0:
@@ -370,15 +490,32 @@ def run_step_2_push_remote_rsync():
         f"{SCIROUTER}:{SCIROUTER_SHARED}/"
     ]
     rsync_cmd = " ".join(shlex.quote(arg) for arg in rsync_args)
-    child.sendline(rsync_cmd)
+    child.sendline(f"{rsync_cmd}; printf '{RSYNC_STATUS_PREFIX}%s\\n' $?; exit")
 
-    if handle_transfer_interaction(child, status_label="Remote rsync (push)"):
-        print("  -> Remote sync finished.")
-        child.sendline('exit')
+    ok = handle_transfer_interaction(
+        child,
+        status_label="Remote rsync (push)",
+        prompt_pattern=None,
+        status_prefix=RSYNC_STATUS_PREFIX,
+        status_output=output,
+    )
+    output.flush()
+    if not ok:
         child.close()
-        return True
+        return False
+    if output.status is None:
+        print("Remote rsync (push) did not report an exit status.")
+        child.close()
+        return False
+    if output.status != 0:
+        print(f"Remote rsync (push) failed with exit code {output.status}.")
+        child.close()
+        return False
+    print("  -> Remote sync finished.")
+    if source_files is not None:
+        print_skipped_files(source_files, output.changed_paths)
     child.close()
-    return False
+    return True
 
 def pull():
     require_password()
@@ -402,7 +539,7 @@ def pull():
         LOCAL_PARALLEL
     ]
     rsync_cmd = " ".join(shlex.quote(arg) for arg in rsync_args)
-    if not run_transfer_with_pexpect(rsync_cmd, "Step 2"):
+    if not run_transfer_with_pexpect(rsync_cmd, "Step 2", print_skips=False):
         print("Failed Step 2")
         sys.exit(1)
     
@@ -436,6 +573,7 @@ def push():
     # 2. Local rsync (Local pushes to Orion)
     print("Step 2: Pushing from Local to Orion...")
     local_sources = local_exercise_paths()
+    local_files = collect_local_files()
     rsync_args = [
         *RSYNC_BASE_ARGS,
         "-e", build_ssh_command(),
@@ -443,12 +581,12 @@ def push():
         f"{ORION}:{ORION_HOME}/shared/"
     ]
     rsync_cmd = " ".join(shlex.quote(arg) for arg in rsync_args)
-    if not run_transfer_with_pexpect(rsync_cmd, "Step 2"):
+    if not run_transfer_with_pexpect(rsync_cmd, "Step 2", source_files=local_files, print_skips=False):
         print("Failed Step 2")
         sys.exit(1)
         
     # 3. Remote rsync (Orion pushes to Scirouter)
-    if not run_step_2_push_remote_rsync():
+    if not run_step_2_push_remote_rsync(local_files):
         print("Failed Step 3")
         sys.exit(1)
         

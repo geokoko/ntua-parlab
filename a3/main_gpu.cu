@@ -18,8 +18,8 @@ int _debug;
     double validation_eps = 1e-2; 
 #endif 
 
-static void usage(char *argv0) {
-    char *help =
+static void usage(const char *argv0) {
+    const char *help =
         "Usage: %s [switches]\n"
         "       -c num_clusters    : number of clusters (must be > 1)\n"
         "       -s size            : size of examined dataset\n"
@@ -27,8 +27,8 @@ static void usage(char *argv0) {
         "       -t threshold       : threshold value (default : 0.001)\n"
         "       -l loop_threshold  : iterations threshold (default : 10)\n"
         "       -d                 : enable debug mode\n"
-        "       -h                 : print this help information\n";
-        "GPU extras:\n";
+        "       -h                 : print this help information\n"
+        "GPU extras:\n"
         "       -b                 : blocksize\n";
     fprintf(stderr, help, argv0);
     exit(-1);
@@ -48,7 +48,6 @@ int main(int argc, char **argv)
     double * clusters;      // [numClusters * numCoords] cluster center
     double   dataset_size = 0, threshold;
     long    loop_threshold;
-    double  io_timing_read;
 
     /* some default values */
     _debug         = 0;

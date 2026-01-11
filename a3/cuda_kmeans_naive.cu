@@ -116,7 +116,6 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		int blockSize) {
 	double timing = wtime(), timing_internal, timer_min = 1e42, timer_max = 0;
 	double timing_gpu, timing_cpu, timing_transfers, transfers_time = 0.0, cpu_time = 0.0, gpu_time = 0.0;
-	int loop_iterations = 0;
 	int i, j, index, loop = 0;
 	int *newClusterSize; /* [numClusters]: no. objects assigned in each
 							new cluster */
@@ -257,4 +256,3 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 	return;
 }
-

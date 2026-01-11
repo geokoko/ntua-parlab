@@ -10,8 +10,8 @@ int _debug;
 #include "alloc.h"
 #include "kmeans.h"
 
-static void usage(char *argv0) {
-    char *help =
+static void usage(const char *argv0) {
+    const char *help =
         "Usage: %s [switches]\n"
         "       -c num_clusters    : number of clusters (must be > 1)\n"
         "       -s size            : size of examined dataset\n"

@@ -37,6 +37,12 @@ log_dir_for_prog() {
 		kmeans_cuda_all_gpu)
 			echo "${RESULTS_DIR}/all_gpu"
 			;;
+		kmeans_cuda_all_gpu_single_kernel)
+			echo "${RESULTS_DIR}/all_gpu_single_kernel"
+			;;
+		kmeans_cuda_all_gpu_all_reduction)
+			echo "${RESULTS_DIR}/all_gpu_all_reduction"
+			;;
 		kmeans_cuda_all_gpu_delta_reduction)
 			echo "${RESULTS_DIR}/reduction"
 			;;
@@ -57,8 +63,10 @@ progs=(
 	kmeans_cuda_naive
 	kmeans_cuda_transpose
 	kmeans_cuda_shared
-	#kmeans_cuda_all_gpu
-	#kmeans_cuda_all_gpu_delta_reduction
+	kmeans_cuda_all_gpu
+	kmeans_cuda_all_gpu_single_kernel
+	kmeans_cuda_all_gpu_all_reduction
+	kmeans_cuda_all_gpu_delta_reduction
 )
 
 for prog in "${progs[@]}"; do
@@ -68,4 +76,3 @@ for prog in "${progs[@]}"; do
 	make_err="${log_dir}/make.err"
 	make "$prog" >> "$make_out" 2>> "$make_err"
 done
-

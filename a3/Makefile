@@ -29,7 +29,7 @@ SEQ_HELP_OBJ = $(OBJECT_DIR)/main_sec.o $(OBJECT_DIR)/file_io.o $(OBJECT_DIR)/ut
 CUDA_HELP_OBJ = $(OBJECT_DIR)/main_gpu.o  $(OBJECT_DIR)/file_io.o $(OBJECT_DIR)/util.o $(OBJECT_DIR)/error.o $(OBJECT_DIR)/alloc.o $(OBJECT_DIR)/seq_kmeans.o
 
 all: kmeans_seq kmeans_cuda_naive
-#kmeans_cuda_transpose kmeans_cuda_shared kmeans_cuda_all_gpu kmeans_cuda_all_gpu_delta_reduction
+#kmeans_cuda_transpose kmeans_cuda_shared kmeans_cuda_all_gpu kmeans_cuda_all_gpu_single_kernel kmeans_cuda_all_gpu_delta_reduction kmeans_cuda_all_gpu_all_reduction
 
 #---------------------------------------------------------------------
 
@@ -48,7 +48,13 @@ kmeans_cuda_shared: $(OBJECT_DIR)/cuda_kmeans_shared.o $(CUDA_HELP_OBJ)
 kmeans_cuda_all_gpu: $(OBJECT_DIR)/cuda_kmeans_all_gpu.o $(CUDA_HELP_OBJ)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@ $(LDFLAGS) 
 
+kmeans_cuda_all_gpu_single_kernel: $(OBJECT_DIR)/cuda_kmeans_all_gpu_single_kernel.o $(CUDA_HELP_OBJ)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@ $(LDFLAGS) 
+
 kmeans_cuda_all_gpu_delta_reduction: $(OBJECT_DIR)/cuda_kmeans_all_gpu_delta_reduction.o $(CUDA_HELP_OBJ)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@ $(LDFLAGS) 
+
+kmeans_cuda_all_gpu_all_reduction: $(OBJECT_DIR)/cuda_kmeans_all_gpu_all_reduction.o $(CUDA_HELP_OBJ)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@ $(LDFLAGS) 
 		
 #kmeans_cuda_all_gpu_reduction: $(OBJECT_DIR)/cuda_kmeans_all_gpu_reduction.o $(CUDA_HELP_OBJ)
@@ -70,7 +76,13 @@ $(OBJECT_DIR)/cuda_kmeans_shared.o: cuda_kmeans_shared.cu
 $(OBJECT_DIR)/cuda_kmeans_all_gpu.o: cuda_kmeans_all_gpu.cu
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
+$(OBJECT_DIR)/cuda_kmeans_all_gpu_single_kernel.o: cuda_kmeans_all_gpu_single_kernel.cu
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+
 $(OBJECT_DIR)/cuda_kmeans_all_gpu_delta_reduction.o: cuda_kmeans_all_gpu_delta_reduction.cu
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+
+$(OBJECT_DIR)/cuda_kmeans_all_gpu_all_reduction.o: cuda_kmeans_all_gpu_all_reduction.cu
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 	
 #$(OBJECT_DIR)/cuda_kmeans_all_gpu_reduction.o: cuda_kmeans_all_gpu_reduction.cu
@@ -101,4 +113,4 @@ $(OBJECT_DIR)/util.o: $(HELPER_DIR)/util.c
 	$(CPP) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf *.o -rf $(OBJECT_DIR)/*.o kmeans_seq kmeans_cuda_naive kmeans_cuda_transpose kmeans_cuda_shared kmeans_cuda_all_gpu kmeans_cuda_all_gpu_delta_reduction
+	rm -rf *.o -rf $(OBJECT_DIR)/*.o kmeans_seq kmeans_cuda_naive kmeans_cuda_transpose kmeans_cuda_shared kmeans_cuda_all_gpu kmeans_cuda_all_gpu_single_kernel kmeans_cuda_all_gpu_delta_reduction kmeans_cuda_all_gpu_all_reduction

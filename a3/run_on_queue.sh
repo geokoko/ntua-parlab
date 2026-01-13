@@ -43,6 +43,14 @@ log_dir_for_prog() {
 			echo "${RESULTS_DIR}/all_gpu"
 			mkdir -p "${RESULTS_DIR}/all_gpu"
 			;;
+		kmeans_cuda_all_gpu_single_kernel)
+			echo "${RESULTS_DIR}/all_gpu_single_kernel"
+			mkdir -p "${RESULTS_DIR}/all_gpu_single_kernel"
+			;;
+		kmeans_cuda_all_gpu_all_reduction)
+			echo "${RESULTS_DIR}/all_gpu_all_reduction"
+			mkdir -p "${RESULTS_DIR}/all_gpu_all_reduction"
+			;;
 		kmeans_cuda_all_gpu_delta_reduction)
 			echo "${RESULTS_DIR}/reduction"
 			mkdir -p "${RESULTS_DIR}/reduction"
@@ -100,8 +108,10 @@ progs=(
 	kmeans_cuda_naive
 	kmeans_cuda_transpose
 	kmeans_cuda_shared
-	#kmeans_cuda_all_gpu
-	#kmeans_cuda_all_gpu_delta_reduction
+	kmeans_cuda_all_gpu
+	kmeans_cuda_all_gpu_single_kernel
+	kmeans_cuda_all_gpu_all_reduction
+	kmeans_cuda_all_gpu_delta_reduction
 )
 
 for size in $sizes; do
@@ -114,7 +124,7 @@ for size in $sizes; do
 					kmeans_seq)
 						run_logged "$prog"
 						;;
-					kmeans_cuda_naive|kmeans_cuda_transpose|kmeans_cuda_shared|kmeans_cuda_all_gpu|kmeans_cuda_all_gpu_delta_reduction)
+					kmeans_cuda_naive|kmeans_cuda_transpose|kmeans_cuda_shared|kmeans_cuda_all_gpu|kmeans_cuda_all_gpu_single_kernel|kmeans_cuda_all_gpu_all_reduction|kmeans_cuda_all_gpu_delta_reduction)
 						for bs in $block_size; do
 							run_logged "$prog" "$bs"
 						done

@@ -45,20 +45,37 @@ double euclid_dist_2_transpose(int numCoords,
 	return (ans);
 }
 
+template <typename T>
+__global__ static
+void reduce_blocks(const T *block_data, T *out, int numBlocks, int elemsPerBlock) {
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (idx >= elemsPerBlock) {
+		return;
+	}
+
+	T sum = 0;
+	for (int b = 0; b < numBlocks; ++b) {
+		sum += block_data[b * elemsPerBlock + idx];
+	}
+	out[idx] = sum;
+}
+
 /*----< find_nearest_cluster() >---------------------------------------------*/
 __global__ static
 void find_nearest_cluster(int numCoords,
 		int numObjs,
 		int numClusters,
 		double *deviceobjects,           //  [numCoords][numObjs]
-		int *devicenewClusterSize,           //  [numClusters]
-		double *devicenewClusters,    //  [numCoords][numClusters]
 		double *deviceClusters,    //  [numCoords][numClusters]
+		double *devicenewClustersBlocks,    //  [numBlocks][numCoords][numClusters]
+		int *devicenewClusterSizeBlocks,    //  [numBlocks][numClusters]
 		int *deviceMembership,          //  [numObjs]
-		double *devdelta) {
+		double *devdeltaBlocks) { // [numBlocks]
 	extern __shared__ double shmem_total[];
 	double *shmemClusters = shmem_total;
 	double *delta_reduce_buff = shmem_total + numClusters * numCoords;
+	int *shmemClusterSizes = (int *)(delta_reduce_buff + blockDim.x);
 	int i;
 	for (i = threadIdx.x; i < numClusters * numCoords; i += blockDim.x) {
 		shmemClusters[i] = deviceClusters[i];
@@ -90,26 +107,17 @@ void find_nearest_cluster(int numCoords,
 	   corresponding to its local id (threadIdx.x) -> 1.0 if membership changes, otherwise 0.
 	   - Then, ensuring delta_reduce_buff is fully updated, its containts must be summed in delta_reduce_buff[0]
 	   either by one thread (lower perf) or with a tree-based reduction (similar to dot reduction example in slides)
-	   - Finally, delta_reduce_buff[0] (local value in block) must be added to devdelta (global delta value), ensuring write dependencies!
+	   - Finally, delta_reduce_buff[0] (local value in block) is written to devdeltaBlocks[blockIdx.x],
+	   and a separate reduction kernel combines block results (no global atomics here).
 	   */
 
-	/* Assign the cluster to object, and update new clusters */
+	/* Assign the cluster to object, and update new cluster centers */
 	if (tid < numObjs) {
 		int prev = deviceMembership[tid];
 		if (prev != index) {
-			// membership changed
 			local_delta = 1.0;
 		}
 		deviceMembership[tid] = index;
-
-		// increment cluster size atomically
-		atomicAdd(&devicenewClusterSize[index], 1);
-
-		// add to new cluster center coordinates atomically
-		for (i = 0; i < numCoords; i++) {
-			atomicAdd(&devicenewClusters[i * numClusters + index],
-					deviceobjects[i * numObjs + tid]);
-		}
 	}
 
 	delta_reduce_buff[threadIdx.x] = local_delta;
@@ -125,14 +133,40 @@ void find_nearest_cluster(int numCoords,
 		__syncthreads();
 	}
 	// everything in every block is now summed to index 0 of delta_reduce_buff
-	// copy to global memory with atomic add
+	// No global atomics: each block stores its delta in its own slot.
 	if (threadIdx.x == 0) {
-		atomicAdd(devdelta, delta_reduce_buff[0]);
+		devdeltaBlocks[blockIdx.x] = delta_reduce_buff[0];
 	}
-	// the improvement from previous methods is that here we do one atomic add per block, not per thread
+
+	for (i = threadIdx.x; i < numClusters; i += blockDim.x) {
+		shmemClusterSizes[i] = 0;
+	}
+	__syncthreads();
+
+	for (i = threadIdx.x; i < numClusters * numCoords; i += blockDim.x) {
+		shmemClusters[i] = 0.0;
+	}
+	__syncthreads();
+
+	if (tid < numObjs) {
+		atomicAdd(&shmemClusterSizes[index], 1);
+		for (i = 0; i < numCoords; i++) {
+			atomicAdd(&shmemClusters[i * numClusters + index],
+					deviceobjects[i * numObjs + tid]);
+		}
+	}
+
+	__syncthreads();
+	/* No global atomics: each block writes its own slice. */
+	for (i = threadIdx.x; i < numClusters * numCoords; i += blockDim.x) {
+		devicenewClustersBlocks[blockIdx.x * (numClusters * numCoords) + i] = shmemClusters[i];
+	}
+	for (i = threadIdx.x; i < numClusters; i += blockDim.x) {
+		devicenewClusterSizeBlocks[blockIdx.x * numClusters + i] = shmemClusterSizes[i];
+	}
 }
 
-__global__ static
+	__global__ static
 void update_centroids(int numCoords,
 		int numClusters,
 		int *devicenewClusterSize,           //  [numClusters]
@@ -184,7 +218,7 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 	double **dimObjects = (double **) calloc_2d(numCoords, numObjs, sizeof(double));
 	double **dimClusters = (double **) calloc_2d(numCoords, numClusters, sizeof(double));
 
-	printf("\n|-----------Full-offload Delta Reduction GPU Kmeans------------|\n\n");
+	printf("\n|-----------Full-offload All Reduction GPU Kmeans------------|\n\n");
 
 	for (i = 0; i < numObjs; i++) {
 		for (j = 0; j < numCoords; j++) {
@@ -193,9 +227,11 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 	}
 
 	double *deviceObjects;
-	double *deviceClusters, *devicenewClusters;
+	double *deviceClusters;
+	double *devicenewClustersBlocks, *devicenewClusters;
 	int *deviceMembership;
-	int *devicenewClusterSize; /* [numClusters]: no. objects assigned in each new cluster */
+	int *devicenewClusterSizeBlocks, *devicenewClusterSize; /* [numClusters]: no. objects assigned in each new cluster */
+	double *devdeltaBlocks;
 
 	/* pick first numClusters elements of objects[] as initial cluster centers*/
 	for (i = 0; i < numCoords; i++) {
@@ -221,7 +257,8 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		- Your exercise implementation is not requested to account for that (e.g. always assume deviceClusters fit in shmemClusters */
 	const unsigned int clusterBlockSharedDataSize =
 		numClusters * numCoords * sizeof(double) +
-		numThreadsPerClusterBlock * sizeof(double);
+		numThreadsPerClusterBlock * sizeof(double) +
+		numClusters * sizeof(int);
 
 	cudaDeviceProp deviceProp;
 	int deviceNum;
@@ -234,9 +271,14 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 	checkCuda(cudaMalloc(&deviceObjects, numObjs * numCoords * sizeof(double)));
 	checkCuda(cudaMalloc(&deviceClusters, numClusters * numCoords * sizeof(double)));
+	checkCuda(cudaMalloc(&devicenewClustersBlocks,
+				numClusterBlocks * numClusters * numCoords * sizeof(double)));
+	checkCuda(cudaMalloc(&devicenewClusterSizeBlocks,
+				numClusterBlocks * numClusters * sizeof(int)));
 	checkCuda(cudaMalloc(&devicenewClusters, numClusters * numCoords * sizeof(double)));
 	checkCuda(cudaMalloc(&devicenewClusterSize, numClusters * sizeof(int)));
 	checkCuda(cudaMalloc(&deviceMembership, numObjs * sizeof(int)));
+	checkCuda(cudaMalloc(&devdeltaBlocks, numClusterBlocks * sizeof(double)));
 	checkCuda(cudaMalloc(&dev_delta_ptr, sizeof(double)));
 
 	timing = wtime() - timing;
@@ -259,23 +301,49 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 	do {
 		timing_internal = wtime();
-		checkCuda(cudaMemset(devicenewClusterSize, 0, numClusters * sizeof(int)));
-		checkCuda(cudaMemset(devicenewClusters, 0, numClusters * numCoords * sizeof(double)));
-		checkCuda(cudaMemset(dev_delta_ptr, 0, sizeof(double)));
 		timing_gpu = wtime();
 
 		//printf("Launching find_nearest_cluster Kernel with grid_size = %d, block_size = %d, shared_mem = %d KB\n", numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize/1000);
 		find_nearest_cluster
 			<<< numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize >>>
 			(numCoords, numObjs, numClusters,
-			 deviceObjects, devicenewClusterSize, devicenewClusters,
-			 deviceClusters, deviceMembership, dev_delta_ptr);
+			 deviceObjects, deviceClusters,
+			 devicenewClustersBlocks, devicenewClusterSizeBlocks,
+			 deviceMembership, devdeltaBlocks);
 		cudaDeviceSynchronize();
 		checkLastCudaError();
 
 		gpu_time += wtime() - timing_gpu;
 
 		//printf("Kernels complete for itter %d, updating data in CPU\n", loop);
+
+		const unsigned int reduce_clusters_block_sz =
+			(numCoords * numClusters > blockSize) ? blockSize : numCoords * numClusters;
+		const unsigned int reduce_clusters_dim_sz =
+			(numCoords * numClusters + reduce_clusters_block_sz - 1) / reduce_clusters_block_sz;
+		const unsigned int reduce_sizes_block_sz =
+			(numClusters > blockSize) ? blockSize : numClusters;
+		const unsigned int reduce_sizes_dim_sz =
+			(numClusters + reduce_sizes_block_sz - 1) / reduce_sizes_block_sz;
+		const unsigned int reduce_delta_block_sz =
+			(numClusterBlocks > blockSize) ? blockSize : numClusterBlocks;
+
+		timing_gpu = wtime();
+		/* No atomics: explicit reduction across per-block outputs. */
+		reduce_blocks<double>
+			<<< reduce_clusters_dim_sz, reduce_clusters_block_sz >>>
+			(devicenewClustersBlocks, devicenewClusters,
+			 numClusterBlocks, numClusters * numCoords);
+		reduce_blocks<int>
+			<<< reduce_sizes_dim_sz, reduce_sizes_block_sz >>>
+			(devicenewClusterSizeBlocks, devicenewClusterSize,
+			 numClusterBlocks, numClusters);
+		reduce_blocks<double>
+			<<< 1, reduce_delta_block_sz >>>
+			(devdeltaBlocks, dev_delta_ptr, numClusterBlocks, 1);
+		cudaDeviceSynchronize();
+		checkLastCudaError();
+		gpu_time += wtime() - timing_gpu;
 
 		timing_transfers = wtime();
 		checkCuda(cudaMemcpy(&delta, dev_delta_ptr, sizeof(double), cudaMemcpyDeviceToHost));
@@ -330,11 +398,14 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 			numObjs * numCoords * sizeof(double) / (1024 * 1024), numCoords, numClusters);
 	FILE *fp = fopen(outfile_name, "a+");
 	if (!fp) error("Filename %s did not open succesfully, no logging performed\n", outfile_name);
-	fprintf(fp, "%s,%d,%lf,%lf,%lf\n", "All_GPU_Delta_Reduction", blockSize, timing / loop, timer_min, timer_max);
+	fprintf(fp, "%s,%d,%lf,%lf,%lf\n", "All_GPU_All_Reduction", blockSize, timing / loop, timer_min, timer_max);
 	fclose(fp);
 
 	checkCuda(cudaFree(deviceObjects));
 	checkCuda(cudaFree(deviceClusters));
+	checkCuda(cudaFree(devicenewClustersBlocks));
+	checkCuda(cudaFree(devicenewClusterSizeBlocks));
+	checkCuda(cudaFree(devdeltaBlocks));
 	checkCuda(cudaFree(devicenewClusters));
 	checkCuda(cudaFree(devicenewClusterSize));
 	checkCuda(cudaFree(deviceMembership));

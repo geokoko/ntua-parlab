@@ -295,6 +295,7 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 	checkCuda(cudaFree(deviceObjects));
 	checkCuda(cudaFree(deviceClusters));
 	checkCuda(cudaFree(deviceMembership));
+	checkCuda(cudaFree(dev_delta_ptr));
 
 	free(dimObjects[0]);
 	free(dimObjects);

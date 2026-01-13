@@ -185,8 +185,10 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 		checkCuda(cudaMemset(dev_delta_ptr, 0, sizeof(double)));
 
-		printf("Launching find_nearest_cluster Kernel with grid_size = %d, block_size = %d, shared_mem = %d KB\n", 
-				numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize/1000);
+		if (_debug) {
+			printf("Launching find_nearest_cluster Kernel with grid_size = %d, block_size = %d, shared_mem = %d KB\n", 
+					numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize/1000);
+		}
 		timing_gpu = wtime();
 		find_nearest_cluster
 			<<< numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize >>>
@@ -196,7 +198,9 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		cudaDeviceSynchronize();
 		checkLastCudaError();
 		gpu_time += wtime() - timing_gpu;
-		printf("Kernels complete for itter %d, updating data in CPU\n", loop);
+		if (_debug) {
+			printf("Kernels complete for itter %d, updating data in CPU\n", loop);
+		}
 
 		timing_transfers = wtime();
 		/* Copy deviceMembership to membership (gpu -> host) */
@@ -265,6 +269,7 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 	checkCuda(cudaFree(deviceObjects));
 	checkCuda(cudaFree(deviceClusters));
 	checkCuda(cudaFree(deviceMembership));
+	checkCuda(cudaFree(dev_delta_ptr));
 
 	free(dimObjects[0]);
 	free(dimObjects);

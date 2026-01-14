@@ -271,10 +271,6 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		checkCuda(cudaMemset(deviceBlockCounter, 0, sizeof(unsigned int)));
 		checkCuda(cudaMemset(deviceBlockFlag, 0, sizeof(unsigned int)));
 		timing_gpu = wtime();
-		if (_debug) {
-			printf("Launching find_nearest_cluster Kernel with grid_size = %d, block_size = %d, shared_mem = %d KB\n", 
-					numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize/1000);
-		}
 		find_nearest_cluster
 			<<< numClusterBlocks, numThreadsPerClusterBlock, clusterBlockSharedDataSize >>>
 			(numCoords, numObjs, numClusters,
@@ -287,10 +283,6 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 		gpu_time += wtime() - timing_gpu;
 
-		if (_debug) {
-			printf("Kernels complete for itter %d, updating data in CPU\n", loop);
-		}
-
 		timing_transfers = wtime();
 		checkCuda(cudaMemcpy(&delta, dev_delta_ptr, sizeof(double), cudaMemcpyDeviceToHost));
 		transfers_time += wtime() - timing_transfers;
@@ -299,13 +291,7 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 		timing_cpu = wtime();
 		delta /= numObjs;
-		if (_debug) {
-			printf("delta is %f - ", delta);
-		}
 		loop++;
-		if (_debug) {
-			printf("completed loop %d\n", loop);
-		}
 		cpu_time += wtime() - timing_cpu;
 
 		timing_internal = wtime() - timing_internal;

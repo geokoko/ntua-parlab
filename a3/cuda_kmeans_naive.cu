@@ -127,7 +127,6 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 	printf("\n|-------------Naive GPU Kmeans--------------|\n\n");
 
-
 	/* initialize membership[] */
 	for (i = 0; i < numObjs; i++) membership[i] = -1;
 
@@ -236,7 +235,6 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 			"-> t_cpu_avg = %lf ms\n\t-> t_gpu_avg = %lf ms\n\t-> t_transfers_avg = %lf ms\n\n|-------------------------------------------|\n",
 			loop, 1000 * timing, 1000 * timing / loop, 1000 * timer_min, 1000 * timer_max,
 			1000 * cpu_time / loop, 1000 * gpu_time / loop, 1000 * transfers_time / loop);
-
 	char outfile_name[1024] = {0};
 	sprintf(outfile_name, "Execution_logs/silver1-V100_Sz-%lu_Coo-%d_Cl-%d.csv",
 			numObjs * numCoords * sizeof(double) / (1024 * 1024), numCoords, numClusters);

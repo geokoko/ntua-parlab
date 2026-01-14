@@ -207,7 +207,6 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 	/* DATA LAYOUT CHANGE: Allocate column-based format for objects and clusters */
 	double **dimObjects, **dimClusters;
 	printf("\n|-----------Full-offload GPU Kmeans------------|\n\n");
-
 	/* DONE: Allocate memory */
 	dimObjects = (double **) calloc_2d(numCoords, numObjs, sizeof(double));
 	dimClusters = (double **) calloc_2d(numCoords, numClusters, sizeof(double));
@@ -296,10 +295,6 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		checkCuda(cudaMemset(devicenewClusters, 0, numClusters * numCoords * sizeof(double)));
 		checkCuda(cudaMemset(dev_delta_ptr, 0, sizeof(double)));
 		timing_gpu = wtime();
-		if (_debug) {
-			printf("Launching find_nearest_cluster Kernel with grid_size = %d, block_size = %d, shared_mem = %d KB\n", 
-					numClusterBlocks, numThreadsPerClusterBlock, (int)(shared_data_size/1000));
-		}
 		/* DONE: launch  kernel 1 (find_nearest_cluster ) */
 		   find_nearest_cluster
 		   <<< numClusterBlocks, numThreadsPerClusterBlock, shared_data_size >>>
@@ -311,10 +306,6 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 		checkLastCudaError();
 
 		gpu_time += wtime() - timing_gpu;
-
-		if (_debug) {
-			printf("Kernel 1 complete for itter %d, updating data in CPU\n", loop);
-		}
 
 		timing_transfers = wtime();
 		/* DONE: Copy dev_delta_ptr to &delta
@@ -337,13 +328,7 @@ void kmeans_gpu(double *objects,      /* in: [numObjs][numCoords] */
 
 		timing_cpu = wtime();
 		delta /= numObjs;
-		if (_debug) {
-			printf("delta is %f - ", delta);
-		}
 		loop++;
-		if (_debug) {
-			printf("completed loop %d\n", loop);
-		}
 		cpu_time += wtime() - timing_cpu;
 
 		// Continue until convergence

@@ -86,7 +86,7 @@ int main(int argc, char **argv)
     numObjs = (dataset_size*1024*1024) / (numCoords*sizeof(double));
 
     if (numObjs < numClusters) {
-        printf("Error: number of clusters must be larger than the number of data points to be clustered.\n");
+        fprintf(stderr, "Error: number of clusters must be larger than the number of data points to be clustered.\n");
         return 1;
     }
     printf("dataset_size = %.2f MB    numObjs = %ld    numCoords = %ld    numClusters = %ld, block_size = %d\n", dataset_size, numObjs, numCoords, numClusters, block_size);
@@ -111,7 +111,7 @@ int main(int argc, char **argv)
 		}
     // check initial cluster centers for repetition 
     if (check_repeated_clusters(numClusters, numCoords, clusters) == 0) {
-        printf("Error: some initial clusters are repeated. Please select distinct initial centers\n");
+        fprintf(stderr, "Error: some initial clusters are repeated. Please select distinct initial centers\n");
         return 1;
     }
 

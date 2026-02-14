@@ -1,2 +1,0 @@
-MT_CONF=0,1
-Nthreads: 2  Runtime(sec): 10  Workload: 100/0/0  Throughput(Kops/sec): 203.15

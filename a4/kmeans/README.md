@@ -16,7 +16,7 @@ Also includes `sequential/` and `openmp-kmeans/` subdirectories with baseline im
 
 ## Compiling
 
-Requires MPI (e.g., OpenMPI or MPICH). Compilation is performed through the queue:
+Compilation is performed through the queue:
 
 ```bash
 qsub -q parlab -l nodes=...:ppn=... make_on_queue.sh
@@ -44,5 +44,5 @@ Use `nodes`/`ppn` values appropriate for your experiment.
 Example:
 
 ```bash
-qsub -q parlab -l nodes=2:ppn=16 run_on_queue.sh
+qsub -q parlab -l nodes=8:ppn=8 run_on_queue.sh
 ```

@@ -14,7 +14,7 @@
 #PBS -l walltime=00:05:00
 
 module load openmpi/1.8.3
-cd /home/parallel/parlab16/shared/a4/kmeans
+cd <YOUR_SCIROUTER_PATH>/a4/kmeans
 make clean
 make
 

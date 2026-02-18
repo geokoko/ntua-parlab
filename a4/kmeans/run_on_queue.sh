@@ -11,5 +11,5 @@
 #PBS -l nodes=8:ppn=8
 
 module load openmpi/1.8.3
-cd /home/parallel/parlab16/shared/a4/kmeans
+cd <YOUR_SCIROUTER_PATH>/a4/kmeans 
 mpirun -np 1 --mca btl tcp,self ./kmeans_mpi -s 256 -n 16 -c 32 -l 10
